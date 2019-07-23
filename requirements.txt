@@ -1,0 +1,4 @@
+torch==1.0.1
+nltk==3.2.4
+tensorboardX==0.8
+torchtext==0.3.1
