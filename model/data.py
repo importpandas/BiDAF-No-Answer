@@ -109,6 +109,20 @@ class SQuAD():
                             answers = qa['answers']
                             is_impossible = 0
 
+                        if len(answers) == 0:
+                            s_idx = len(tokens)
+                            dump.append(dict([('id', id),
+                                ('context', context),
+                                ('question', question),
+                                ('answer', ""),
+                                ('is_impossible', is_impossible),
+                                ('s_idx', s_idx),
+                                ('e_idx', s_idx),
+                                ('augmented_s_idx', s_idx),
+                                ('augmented_e_idx', s_idx)]))
+                            assert is_impossible==1,"answerable question has no answer"
+                            continue
+
                         for ans in answers:
                             answer = ans['text']
                             s_idx = ans['answer_start']
