@@ -35,10 +35,15 @@ class SQuAD():
         dict_fields = {'id': ('id', self.RAW),
                        's_idx': ('s_idx', self.LABEL),
                        'e_idx': ('e_idx', self.LABEL),
+                       'is_impossible': ('is_impossible', self.LABEL),
+                       'augmented_s_idx': ('augmented_s_idx', self.LABEL),
+                       'augmented_e_idx': ('augmented_e_idx', self.LABEL),
                        'context': [('c_word', self.CONTEXT_WORD), ('c_char', self.CHAR)],
                        'question': [('q_word', self.QUESTION_WORD), ('q_char', self.CHAR)]}
 
         list_fields = [('id', self.RAW), ('s_idx', self.LABEL), ('e_idx', self.LABEL),
+                       ('augmented_s_idx', self.LABEL), ('augmented_e_idx', self.LABEL),
+                       ('is_impossible', self.LABEL),
                        ('c_word', self.CONTEXT_WORD), ('c_char', self.CHAR),
                        ('q_word', self.QUESTION_WORD), ('q_char', self.CHAR)]
         
@@ -84,6 +89,8 @@ class SQuAD():
         dump = []
         abnormals = [' ', '\n', '\u3000', '\u202f', '\u2009']
 
+        examples_num = 0
+
         with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
             data = data['data']
@@ -96,15 +103,13 @@ class SQuAD():
                         id = qa['id']
                         question = qa['question']
                         if qa['is_impossible'] == True:
-                            dump.append(dict([('id', id),
-                                              ('context', context),
-                                              ('question', question),
-                                              ('answer', ""),
-                                              ('s_idx', len(tokens)),
-                                              ('e_idx', len(tokens))]))
-                            continue 
+                            answers = qa['plausible_answers']
+                            is_impossible = 1
+                        else:
+                            answers = qa['answers']
+                            is_impossible = 0
 
-                        for ans in qa['answers']:
+                        for ans in answers:
                             answer = ans['text']
                             s_idx = ans['answer_start']
                             e_idx = s_idx + len(answer)
@@ -131,12 +136,26 @@ class SQuAD():
                                     e_idx = i
                                     break
 
+                            augmented_s_idx = s_idx
+                            augmented_e_idx = e_idx
+
+                            if is_impossible == 1:
+                                answer = ""
+                                s_idx = len(tokens)
+                                e_idx = s_idx
+
                             dump.append(dict([('id', id),
                                               ('context', context),
                                               ('question', question),
                                               ('answer', answer),
+                                              ('is_impossible', is_impossible),
                                               ('s_idx', s_idx),
-                                              ('e_idx', e_idx)]))
+                                              ('e_idx', e_idx),
+                                              ('augmented_s_idx', augmented_s_idx),
+                                              ('augmented_e_idx', augmented_e_idx)]))
+                            examples_num += 1
+                if examples_num > 20000:
+                    break
 
         with open(f'{path}l', 'w', encoding='utf-8') as f:
             for line in dump:

@@ -59,7 +59,16 @@ class BiDAF(nn.Module):
         self.p1_weight = Linear(args.hidden_size * 10, 1, dropout=args.dropout)
         self.p2_weight = Linear(args.hidden_size * 10, 1, dropout=args.dropout)
 
-        self.output_LSTM = LSTM(input_size=args.hidden_size * 2,
+        self.p1_tilde_weight = Linear(args.hidden_size * 10, 1, dropout=args.dropout)
+        self.p2_tilde_weight = Linear(args.hidden_size * 10, 1, dropout=args.dropout)
+
+        self.output_LSTM1 = LSTM(input_size=args.hidden_size * 2,
+                                hidden_size=args.hidden_size,
+                                bidirectional=True,
+                                batch_first=True,
+                                dropout=args.dropout)
+
+        self.output_LSTM2 = LSTM(input_size=args.hidden_size * 2,
                                 hidden_size=args.hidden_size,
                                 bidirectional=True,
                                 batch_first=True,
@@ -150,11 +159,17 @@ class BiDAF(nn.Module):
             # (batch, c_len)
             p1 = (self.p1_weight(torch.cat((g,m),dim=-1))).squeeze()
             # (batch, c_len, hidden_size * 2)
-            m2 = self.output_LSTM((m, l))[0]
+            m2 = self.output_LSTM1((m, l))[0]
             # (batch, c_len)
             p2 = (self.p2_weight(torch.cat((g,m2),dim=-1))).squeeze()
 
-            return p1, p2
+            p1_tilde = (self.p1_tilde_weight(torch.cat((g,m),dim=-1))).squeeze()
+            # (batch, c_len, hidden_size * 2)
+            m3 = self.output_LSTM2((m, l))[0]
+            # (batch, c_len)
+            p2_tilde = (self.p2_tilde_weight(torch.cat((g,m3),dim=-1))).squeeze()
+
+            return p1, p2, p1_tilde, p2_tilde
 
         # 1. Character Embedding Layer
 
@@ -182,10 +197,16 @@ class BiDAF(nn.Module):
         m = self.modeling_LSTM2((self.modeling_LSTM1((g, c_lens))[0], c_lens))[0]
 
         # 6. Output Layer
-        p1, p2 = output_layer(g, m, c_lens)
+        p1, p2, p1_tilde, p2_tilde = output_layer(g, m, c_lens)
 
         
         # (batch, c_len), (batch, c_len)
         p1_padded = F.pad(p1,(0,c_maxlen - p1.size()[-1]))
         p2_padded = F.pad(p2,(0,c_maxlen - p2.size()[-1]))
-        return p1_padded, p2_padded
+        p1_tilde_padded = F.pad(p1_tilde,(0,c_maxlen - p1_tilde.size()[-1]))
+        p2_tilde_padded = F.pad(p2_tilde,(0,c_maxlen - p2_tilde.size()[-1]))
+
+        prob_index = c_lens - torch.ones_like(c_lens)
+        impossible_prob = ((p1_padded + p2_padded) / 2.0).gather(1,prob_index.unsqueeze(1))
+
+        return p1_padded, p2_padded, p1_tilde_padded, p2_tilde_padded, impossible_prob

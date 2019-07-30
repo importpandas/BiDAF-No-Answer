@@ -45,7 +45,8 @@ def train(args, data):
             ema.register(name, param.data)
     parameters = filter(lambda p: p.requires_grad, model.parameters())
     optimizer = optim.Adadelta(parameters, lr=args.learning_rate)
-    criterion = nn.CrossEntropyLoss()
+    criterion_text = nn.CrossEntropyLoss()
+    criterion_prob = nn.BCEWithLogitsLoss()
 
     writer = SummaryWriter(log_dir='runs/' + args.model_time)
 
@@ -67,11 +68,15 @@ def train(args, data):
             print('epoch:', present_epoch + 1)
         last_epoch = present_epoch
 
-        p1, p2 = model(batch.c_char,batch.q_char,batch.c_word[0],batch.q_word[0],batch.c_word[1],batch.q_word[1])
+        p1, p2, p1_tilde, p2_tilde, impossible_prob = model(batch.c_char,batch.q_char,batch.c_word[0],batch.q_word[0],batch.c_word[1],batch.q_word[1])
         optimizer.zero_grad()
-        batch_loss = criterion(p1, batch.s_idx) + criterion(p2, batch.e_idx)
-        loss += batch_loss.item()
-        batch_loss.backward()
+        batch_loss1 = criterion_text(p1, batch.s_idx) + criterion_text(p2, batch.e_idx)
+        batch_loss2 = criterion_text(p1_tilde, batch.augmented_s_idx) + criterion_text(p2_tilde, batch.augmented_e_idx)
+        batch_loss3 = criterion_prob(impossible_prob.squeeze(), batch.is_impossible.float())
+        total_loss = batch_loss1 + args.beta * batch_loss2 + args.gamma * batch_loss3
+
+        loss += total_loss.item()
+        total_loss.backward()
         optimizer.step()
 
         for name, param in model.named_parameters():
@@ -88,8 +93,8 @@ def train(args, data):
             writer.add_scalar('f1/dev', dev_f1, c)
             print(f'train loss: {loss:.3f} / dev loss: {dev_loss:.3f}'
                   f' / dev EM: {dev_exact:.3f} / dev F1: {dev_f1:.3f}'
-                  f' / dev hasans EM: {dev_hasans_exact} / dev hasans F1: {dev_hasans_f1}'
-                  f' / dev noans EM: {dev_noans_exact} / dev noans F1: {dev_noans_f1}')
+                  f' / dev hasans EM: {dev_hasans_exact:.3f} / dev hasans F1: {dev_hasans_f1:.3f}'
+                  f' / dev noans EM: {dev_noans_exact:.3f} / dev noans F1: {dev_noans_f1:.3f}')
 
             if dev_f1 > max_dev_f1:
                 max_dev_f1 = dev_f1
@@ -108,7 +113,8 @@ def train(args, data):
 
 def test(model, ema, args, data):
     device = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
-    criterion = nn.CrossEntropyLoss()
+    criterion_text = nn.CrossEntropyLoss()
+    criterion_prob = nn.BCEWithLogitsLoss()
     loss = 0
     answers = dict()
     model.eval()
@@ -120,23 +126,28 @@ def test(model, ema, args, data):
             param.data.copy_(ema.get(name))
 
 
-    total_time = 0 
-    previous_time = time.time()
+    #total_time = 0
+    #previous_time = time.time()
     for batch in iter(data.dev_iter):
         #time1 = time.time()
         with torch.no_grad():
-            p1, p2 = model(batch.c_char,batch.q_char,batch.c_word[0],batch.q_word[0],batch.c_word[1],batch.q_word[1])
+            p1, p2, p1_tilde, p2_tilde, impossible_prob = model(batch.c_char,batch.q_char,batch.c_word[0],batch.q_word[0],batch.c_word[1],batch.q_word[1])
         #p1, p2 = model(batch)
         #time2 = time.time()
         #total_time = total_time + time2 - time1
-        batch_loss = criterion(p1, batch.s_idx) + criterion(p2, batch.e_idx)
-        loss += batch_loss.item()
+        batch_loss1 = criterion_text(p1, batch.s_idx) + criterion_text(p2, batch.e_idx)
+        batch_loss2 = criterion_text(p1_tilde, batch.augmented_s_idx) + criterion_text(p2_tilde, batch.augmented_e_idx)
+        batch_loss3 = criterion_prob(impossible_prob.squeeze(), batch.is_impossible.float())
+        total_loss = batch_loss1 + args.beta * batch_loss2 + args.gamma * batch_loss3
+        loss += total_loss.item()
 
+        p1_mean = (p1 + p1_tilde) / 2.0
+        p2_mean = (p2 + p2_tilde) / 2.0
         # (batch, c_len, c_len)
         batch_size, c_len = p1.size()
         ls = nn.LogSoftmax(dim=1)
         mask = (torch.ones(c_len, c_len) * float('-inf')).to(device).tril(-1).unsqueeze(0).expand(batch_size, -1, -1)
-        score = (ls(p1).unsqueeze(2) + ls(p2).unsqueeze(1)) + mask
+        score = (ls(p1_mean).unsqueeze(2) + ls(p2_mean).unsqueeze(1)) + mask
         score, s_idx = score.max(dim=1)
         score, e_idx = score.max(dim=1)
         s_idx = torch.gather(s_idx, 1, e_idx.view(-1, 1)).squeeze()
@@ -185,6 +196,8 @@ def main():
     parser.add_argument('--prediction_file', default='prediction.out')
     parser.add_argument('--id', default=0, type=int)
     parser.add_argument('--random_seed', default=1, type=int)
+    parser.add_argument('--beta', default=0.3, type=float, help="auxiliary loss for augmented answer prediction")
+    parser.add_argument('--gamma', default=1, type=float, help="auxiliary loss for answerability of question")
     args = parser.parse_args()
 
     set_seed(args.random_seed)
